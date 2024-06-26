@@ -230,8 +230,6 @@ class MIMORegressionMachineLearner:
         squerr = diff * diff
         return np.sqrt(np.mean(squerr, axis=0)) # average over the rows
 
-        
-
 
     # Getter functions below (Used to get the values)
     def train_mse(self):
