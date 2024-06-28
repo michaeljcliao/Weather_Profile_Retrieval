@@ -2,7 +2,8 @@
 # Date: June 2024
 # File Purpose: .py file package to apply machine learning to multi-input-multi- 
 #               output tasks with Random Forest, XGBoost, or Neural Network
-# %% ------------------------------------------------------------------------
+
+import random
 import numpy as np
 import matplotlib.pyplot as plt
 from enum import Enum
@@ -14,15 +15,21 @@ from sklearn.metrics import mean_squared_error
 from sklearn.multioutput import MultiOutputRegressor
 from sklearn.ensemble import RandomForestRegressor
 from xgboost import XGBRegressor
-from torch import nn, optim, from_numpy, cuda
+from torch import nn, optim, as_tensor, cuda
 import time
-# %% ------------------------------------------------------------------------
+
 class MIMORegressionMachineLearner:
     def __init__(self):
-        self.random_state = None
+        self.random_state = 7036
         self.is_y_pca = False # Flag stating whether the y labels are pca'd
-        # Number of principal components: set as 1 to initialize
-        self.n_components = 1 
+        
+        # Dimension of the input: set as 1 to initialize
+        self.x_input_dim = 1
+
+        # Final output dimension: set as 1 to initialize; could be affected by
+        # applying pca to y
+        self.y_output_dim = 1
+        
         self.isModelTrained = False # Flag indicating whether model is trained
         self.model_type = self.ModelType.Undeclared
         # Default grid for Random Forest
@@ -37,7 +44,15 @@ class MIMORegressionMachineLearner:
                          'multi_strategy': 'multi_output_tree'}
         
         self.neuralNet = self.Net(self)
-        self.nn_layer_array = ['l1', 'l2', 'outlayer']
+
+        # Set the random seeds
+        random.seed(self.random_state)
+        np.random.seed(self.random_state)
+        torch.manual_seed(self.random_state)
+        torch.cuda.manual_seed(self.random_state)
+        torch.cuda.manual_seed_all(self.random_state)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
         # Note: attributes that are learned or are results from the machine
         # learning is suffixed by a "_"
@@ -56,40 +71,37 @@ class MIMORegressionMachineLearner:
             super(parent.Net, self).__init__()
             self.parent = parent
             self.l1 = nn.Sequential(
-                nn.Linear(37, 30),
-                nn.ReLU(inplace=True)
+                nn.Linear(parent.x_input_dim, 30),
+                nn.ReLU()
             )
             self.l2 = nn.Sequential(
                 nn.Linear(30, 20),
-                nn.ReLU(inplace=True)
+                nn.ReLU()
             )
-            self.outlayer = nn.Linear(20, parent.n_components)
-            self.double()
+            self.outlayer = nn.Linear(20, parent.y_output_dim)
+            self.nn_layer_array = ['l1', 'l2', 'outlayer']
+            # self.double()
 
         def forward(self, x):
+            print(x.shape)
             x = self.l1(x)
+            print(x.shape)
             x = self.l2(x)
-            return self.outlayer(x)
+            print(x.shape)
+            x = self.outlayer(x)
+            print(x.shape)
+            return x
 
-    def randomStateSetter(self, random_state):
-        # Check if random_state is indeed integer
-        if not isinstance(random_state, int):
-            raise Exception("Please specify an integer for random state")
-        self.random_state = random_state
-
-    def dataLoader(self, var_x, var_y, test_size=None):
-        # Check if random state is set
-        if self.random_state == None:
-            raise Exception("Please specify a random state by using"
-                            " randomStateSetter(); an integer is preferred")
-        
+    def dataLoader(self, var_x, var_y, test_size=None):      
         # Check if split ratio is specified
         if test_size == None:
             raise Exception("Please specify a test size between 0 and 1")
         
         # Load data
-        data_x = np.loadtxt(var_x, delimiter=',', dtype=np.float64)
-        data_y = np.loadtxt(var_y, delimiter=',', dtype=np.float64)
+        data_x = np.loadtxt(var_x, delimiter=',', dtype=np.float32)
+        data_y = np.loadtxt(var_y, delimiter=',', dtype=np.float32)
+
+        self.x_input_dim = data_x.shape[1] # Store the input x dimension
 
         # Split into train and test
         self.train_x, self.test_x, self.train_y, self.test_y = train_test_split(
@@ -100,17 +112,12 @@ class MIMORegressionMachineLearner:
         self.train_x = std_scaler.fit_transform(self.train_x)
         self.test_x = std_scaler.transform(self.test_x)
 
-    def pcaY(self, n_components=None):
-        # Check if random state is set
-        if self.random_state == None:
-            raise Exception("Please specify a random state by using"
-                            " randomStateSetter(); an integer is preferred")
-        
+    def pcaY(self, n_components=None):      
         # Check if number of PCs is specified
         if n_components == None:
             raise Exception("Please specify the number of principal components")
         
-        self.n_components = n_components        
+        self.y_output_dim = n_components        
         self.pca_ = PCA(n_components=n_components,
                         random_state=self.random_state)
         self.train_y_pca_ = self.pca_.fit_transform(self.train_y)
@@ -132,24 +139,14 @@ class MIMORegressionMachineLearner:
                             " the hyperparameters")
 
     # Set up the random forest regressor for multiple output
-    def randomForestRegressorInitialize(self):
-        # Check if random state is set
-        if self.random_state == None:
-            raise Exception("Please specify a random state by using"
-                            " randomStateSetter(); an integer is preferred")
-        
+    def randomForestRegressorInitialize(self):      
         self.model_type = self.ModelType.RandomForest # Set the flag
         model = RandomForestRegressor()
         model.set_params(**self.rf_grid) # Set the parameters
         self.model = MultiOutputRegressor(model)
 
     # Set up the XGBoosting regressor for multiple output
-    def XGBRegressorInitialize(self):
-        # Check if random state is set
-        if self.random_state == None:
-            raise Exception("Please specify a random state by using"
-                            " randomStateSetter(); an integer is preferred")
-        
+    def XGBRegressorInitialize(self):      
         self.model_type = self.ModelType.XGBoost # Set the flag
         self.model = XGBRegressor()
         self.model.set_params(**self.xgb_grid) # Set the parameters
@@ -160,8 +157,11 @@ class MIMORegressionMachineLearner:
         # If the dataset does not undergo PCA, the n_components in Net() is 
         # the original dimension of the y label data
         if not self.is_y_pca:
-            self.n_components = self.train_y.shape[1]
-        
+            self.y_output_dim = self.train_y.shape[1]
+
+        # Set the output dimension of the Net as n_components 
+        # self.neuralNet.outlayer.out_features = self.y_output_dim
+
         self.model = self.Net(self)
         device = 'cuda' if cuda.is_available() else 'cpu'
         self.model.to(device)
@@ -171,34 +171,142 @@ class MIMORegressionMachineLearner:
         self.clip_value = clip_value
         self.isClipped = isClipped
 
-    def neuralNetworkAddLayer(self):
+    def neuralNetworkAddLayer(self,
+                              prev_layer=None,
+                              in_neurons=None,
+                              out_neurons=None,
+                              activation_function=nn.ReLU()):
         if self.model_type != self.ModelType.NeuralNetwork:
             raise Exception("Neural Network Exclusive Function")
+        
+        if prev_layer == None:
+            raise Exception("Please specify the previous layer, i.e., after"
+                            " which the new layer will be added")
+        
+        if prev_layer < 1:
+            raise Exception("Invalid previous layer: must be integer larger"
+                            " than or equal to 1")
+        
+        if (in_neurons == None and out_neurons == None):
+            raise Exception("Please specify at least one change with integer:"
+                            " dimension of input or dimension of output")
+        
+        added_layer_name = f'l{prev_layer+1}' # Same as the current next layer
+
+        # If the new layer is in the middle
+        # Change the name for next layer first
+        next_layer_new_name = f'l{prev_layer+2}'
+        self.model._modules[next_layer_new_name] = self.model._modules.pop(
+                                                    added_layer_name)
+
+        if in_neurons == None:
+            # If the input dimension for new layer is not specified, get the 
+            # output dimension of the previous layer
+            in_neurons = getattr(self.model, f'l{prev_layer}')[0].out_features
+        else:
+            getattr(self.model, f'l{prev_layer}')[0].out_features = in_neurons
+
+        if out_neurons == None:
+            # If the output dimension for new layer is not specified, get the
+            # input dimension of the next layer (now renamed)
+            out_neurons = getattr(self.model, next_layer_new_name)[0].in_features
+        else:
+            getattr(self.model, next_layer_new_name)[0].in_features = out_neurons
+
+        setattr(self.model, added_layer_name, nn.Sequential(
+            nn.Linear(in_neurons, out_neurons),
+            activation_function
+        ))
+
+        # Update the layer name list, insert correctly
+        self.model.nn_layer_array.insert(prev_layer+1, next_layer_new_name)
+
+        # Update the forward function
+        def newForwardFunc(x):
+            for layer_name in self.model.nn_layer_array:
+                x = getattr(self.model, layer_name)(x)
+            return x
+            # x = self.model.l1(x)
+            # x = self.model.l2(x)
+            # x = self.model.l3(x)
+            # return self.model.outlayer(x)
+        self.model.forward = newForwardFunc
+        
 
     def neuralNetworkRemoveLayer(self):
         if self.model_type != self.ModelType.NeuralNetwork:
             raise Exception("Neural Network Exclusive Function")
+        
+    # def newForwardFunc(self, x):
+    #     for layer_name in self.model.nn_layer_array:
+    #         x = getattr(self.model, layer_name)(x)
+    #     return self.model.outlayer(x)
 
-    def neuralNetworkModifyNeuron(self, numLayer=None):
+    def neuralNetworkModifyNeuron(self,
+                                  num_layer=None,
+                                  in_neurons=None,
+                                  out_neurons=None):
         if self.model_type != self.ModelType.NeuralNetwork:
             raise Exception("Neural Network Exclusive Function")
+
+        if num_layer == None:
+            raise Exception("Please specify the layer to modify with an integer")
+        
+        if (in_neurons == None and out_neurons == None):
+            raise Exception("Please specify at least one change with integer:"
+                            " dimension of input or dimension of output")
+        
+        layer_count = 0
+        for name, module in self.model.named_modules():
+            if isinstance(module, nn.Sequential):
+                layer_count += 1
+                if layer_count == num_layer:
+                    if in_neurons != None:
+                        module[0].in_features = in_neurons
+                    if out_neurons != None:
+                        module[0].out_features = out_neurons
+
+                # If input is changed, preceding layer also needs to be changed
+                # Unless the preceding layer is layer 0 (does not exist)
+                if (layer_count == (num_layer - 1) and 
+                    num_layer > 0 and 
+                    in_neurons != None):
+                    module[0].out_features = in_neurons
+
+                # If output is changed, succeeding layer also needs to be changed
+                # If the succeeding layer is the outlayer, it will be processed
+                # independently
+                if (layer_count == (num_layer + 1) and
+                    out_neurons != None):
+                    module[0].in_features = out_neurons
+
+            if (name == 'outlayer' and out_neurons != None):
+                module.in_features = out_neurons
     
     def neuralNetworkModifyActivation(self,
-                                      numLayer=None,
+                                      num_layer=None,
                                       activation_function=None):
         if self.model_type != self.ModelType.NeuralNetwork:
             raise Exception("Neural Network Exclusive Function")
         
-        if numLayer == None:
+        if num_layer == None:
             raise Exception("Please specify the layer to modify with an integer")
         
         if activation_function == None:
             raise Exception("Please specify the desired activation function")
         
-        layer_name = self.nn_layer_array[numLayer-1]
-        self.neuralNet.layer_name
-        # TODO: Check ChatGPT for its recommedation
-        # !
+        layer_count = 0
+        for name, module in self.model.named_modules():
+            if isinstance(module, nn.Sequential):
+                layer_count += 1
+                if layer_count == num_layer:
+                    module[1] = activation_function
+
+    def neuralNetworkVisualizer(self):
+        for name, module in self.model.named_modules():
+            print(name)
+            print(module)
+
 
     def neuralNetworkCriterionSetter(self, criterion=None):
         if self.model_type != self.ModelType.NeuralNetwork:
@@ -239,6 +347,7 @@ class MIMORegressionMachineLearner:
 
         self.training_time_ = end_time - start_time # record the training time
 
+
     def trainNN(self, epochs=None):
         # Check if a model has been chosen
         if not hasattr(self, 'model'):
@@ -256,20 +365,27 @@ class MIMORegressionMachineLearner:
         train_mse_arr = []
         test_mse_arr = []
 
-        torch.manual_seed(self.random_state)
-        torch.cuda.manual_seed_all(self.random_state)
+        train_x = as_tensor(self.train_x, dtype=torch.float32)
+        train_y = as_tensor(
+            self.train_y_pca_ if self.is_y_pca else self.train_y,
+            dtype=torch.float32)
+        test_x = as_tensor(self.test_x, dtype=torch.float32)
+
+
         start_time = time.time()
         for epoch in range(epochs):
             # 1) Forward pass: Compute predicted y by passing x to the model
-            y_pred = self.model(from_numpy(self.train_x))
+            y_pred = self.model(train_x)
 
             # 2) Compute and print loss
-            loss = self.criterion(y_pred, from_numpy(self.train_y_pca_))
+            loss = self.criterion(y_pred, train_y)
             print(f'Epoch: {epoch} | Loss: {loss.item()} ')
             loss_array.append(loss.item())
 
+            break
+
             if epoch % 100 == 99:
-                Y_train_pred = self.model(from_numpy(self.train_x))
+                Y_train_pred = self.model(train_x)
                 Y_train_pred = Y_train_pred.detach().numpy()
 
                 if self.is_y_pca:
@@ -278,7 +394,7 @@ class MIMORegressionMachineLearner:
                 train_mse = mean_squared_error(self.train_y, Y_train_pred)
                 train_mse_arr.append(train_mse)
 
-                Y_test_pred = self.model(from_numpy(self.test_x))
+                Y_test_pred = self.model(test_x)
                 Y_test_pred = Y_test_pred.detach().numpy()
 
                 if self.is_y_pca:
@@ -343,14 +459,14 @@ class MIMORegressionMachineLearner:
         # if the y is pca'd, this block inverse transform them back
         if self.is_y_pca:
             self.pred_train_output_ = self.pca_.inverse_transform(
-                self.model(from_numpy(self.train_x)).detach().numpy())
+                self.model(as_tensor(self.train_x)).detach().numpy())
             self.pred_test_output_ = self.pca_.inverse_transform(
-                self.model(from_numpy(self.test_x)).detach().numpy())
+                self.model(as_tensor(self.test_x)).detach().numpy())
         else:
             self.pred_train_output_ = self.model(
-                from_numpy(self.train_x)).detach().numpy()
+                as_tensor(self.train_x)).detach().numpy()
             self.pred_test_output_ = self.model(
-                from_numpy(self.test_x)).detach().numpy()
+                as_tensor(self.test_x)).detach().numpy()
         
 
         # Calculate the mean squared error with both prediction from training
@@ -396,10 +512,10 @@ class MIMORegressionMachineLearner:
         # if the y is pca'd, this block inverse transform them back
         if self.is_y_pca:
             self.pred_new_data_output_ = self.pca_.inverse_transform(
-                self.model(from_numpy(new_data_x)).detach().numpy())
+                self.model(as_tensor(new_data_x)).detach().numpy())
         else:
             self.pred_new_data_output_ = self.model(
-                from_numpy(new_data_x)).detach().numpy()
+                as_tensor(new_data_x)).detach().numpy()
 
     def rmseOverTrain(self, isPercentage=True):
         if not hasattr(self, 'pred_train_output_'):
