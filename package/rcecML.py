@@ -528,7 +528,8 @@ class MIMORegressionMachineLearner:
         if isPercentage:
             diff = diff / self.train_y 
         squerr = diff * diff
-        return np.sqrt(np.mean(squerr, axis=0)) # average over the rows
+        # average over the rows
+        self.rmse_train_ = np.sqrt(np.mean(squerr, axis=0))
     
     def rmseOverTest(self, isPercentage=True):
         if not hasattr(self, 'pred_test_output_'):
@@ -543,7 +544,8 @@ class MIMORegressionMachineLearner:
         if isPercentage:
             diff = diff / self.test_y 
         squerr = diff * diff
-        return np.sqrt(np.mean(squerr, axis=0)) # average over the rows
+        # average over the rows
+        self.rmse_test_ = np.sqrt(np.mean(squerr, axis=0))
     
     def rmseOverNewData(self, new_data_y=None, isPercentage=True):
         if not hasattr(self, 'pred_new_data_output_'):
@@ -562,7 +564,8 @@ class MIMORegressionMachineLearner:
         if isPercentage:
             diff = diff / self.new_data_y 
         squerr = diff * diff
-        return np.sqrt(np.mean(squerr, axis=0)) # average over the rows
+        # average over the rows
+        self.rmse_new_data_ = np.sqrt(np.mean(squerr, axis=0))
         
     def plotLossNN(self,
                    xlabel='Epoch #',
