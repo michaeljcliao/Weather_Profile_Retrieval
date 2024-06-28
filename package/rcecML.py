@@ -42,8 +42,12 @@ class MIMORegressionMachineLearner:
         self.xgb_grid = {'random_state': self.random_state,
                          'tree_method': 'hist',
                          'multi_strategy': 'multi_output_tree'}
-        
-        self.neuralNet = self.Net(self)
+        # Default arrangement of Neural Network
+        self.nn_neuron_list = [self.x_input_dim, 30, 20, self.y_output_dim]
+        self.nn_activation_list = [nn.ReLU(), nn.ReLU()]
+        self.neuralNet = self.Net(self,
+                                  self.nn_neuron_list,
+                                  self.nn_activation_list)
 
         # Set the random seeds
         random.seed(self.random_state)
@@ -67,30 +71,31 @@ class MIMORegressionMachineLearner:
 
     class Net(nn.Module):
 
-        def __init__(self, parent):
+        def __init__(self, parent, neuron_list, activation_list):
             super(parent.Net, self).__init__()
             self.parent = parent
-            self.l1 = nn.Sequential(
-                nn.Linear(parent.x_input_dim, 30),
-                nn.ReLU()
-            )
-            self.l2 = nn.Sequential(
-                nn.Linear(30, 20),
-                nn.ReLU()
-            )
-            self.outlayer = nn.Linear(20, parent.y_output_dim)
-            self.nn_layer_array = ['l1', 'l2', 'outlayer']
-            # self.double()
+            self.neuron_list = neuron_list
+            self.activation_list = activation_list
+            self.layers = nn.ModuleList()
+            for i in range(len(neuron_list)-2):
+                self.layers.append(nn.Sequential(
+                    nn.Linear(self.neuron_list[i],
+                              self.neuron_list[i+1]),
+                    self.activation_list[i]
+                ))
+            # Add the output layer (without activation)
+            self.layers.append(nn.Linear(self.neuron_list[-2],
+                                         self.neuron_list[-1]))
 
         def forward(self, x):
-            print(x.shape)
-            x = self.l1(x)
-            print(x.shape)
-            x = self.l2(x)
-            print(x.shape)
-            x = self.outlayer(x)
-            print(x.shape)
+            for layer in self.layers:
+                x = layer(x)
             return x
+        
+    def refreshNNNeuronList(self):
+        # Updates the x input dim and y output dim into the list and into the 
+        # Neural Network model when the model is initialized
+        self.nn_neuron_list = [self.x_input_dim, 30, 20, self.y_output_dim]
 
     def dataLoader(self, var_x, var_y, test_size=None):      
         # Check if split ratio is specified
@@ -102,6 +107,7 @@ class MIMORegressionMachineLearner:
         data_y = np.loadtxt(var_y, delimiter=',', dtype=np.float32)
 
         self.x_input_dim = data_x.shape[1] # Store the input x dimension
+        self.refreshNNNeuronList()
 
         # Split into train and test
         self.train_x, self.test_x, self.train_y, self.test_y = train_test_split(
@@ -117,7 +123,8 @@ class MIMORegressionMachineLearner:
         if n_components == None:
             raise Exception("Please specify the number of principal components")
         
-        self.y_output_dim = n_components        
+        self.y_output_dim = n_components
+        self.refreshNNNeuronList()  
         self.pca_ = PCA(n_components=n_components,
                         random_state=self.random_state)
         self.train_y_pca_ = self.pca_.fit_transform(self.train_y)
@@ -151,18 +158,33 @@ class MIMORegressionMachineLearner:
         self.model = XGBRegressor()
         self.model.set_params(**self.xgb_grid) # Set the parameters
 
-    def neuralNetworkInitialize(self, clip_value=5, isClipped=True):
+    def neuralNetworkInitialize(self,
+                                clip_value=5,
+                                isClipped=True,
+                                neuron_list=None,
+                                activation_list=None,
+                                criterion=None,
+                                optimizer=None):
         self.model_type = self.ModelType.NeuralNetwork # Set the flag
 
         # If the dataset does not undergo PCA, the n_components in Net() is 
         # the original dimension of the y label data
         if not self.is_y_pca:
             self.y_output_dim = self.train_y.shape[1]
+            self.refreshNNNeuronList()
 
         # Set the output dimension of the Net as n_components 
         # self.neuralNet.outlayer.out_features = self.y_output_dim
 
-        self.model = self.Net(self)
+        # If layer and activation are designated, change it
+        if (neuron_list != None and activation_list != None):
+            self.nn_neuron_list = neuron_list
+            self.nn_activation_list = activation_list
+        elif (neuron_list != None or activation_list != None):
+            raise Exception("Please set customized neuron_list and activation"
+                            " list simultaneously to ensure a correct setup")
+
+        self.model = self.Net(self, self.nn_neuron_list, self.nn_activation_list)
         device = 'cuda' if cuda.is_available() else 'cpu'
         self.model.to(device)
         
@@ -171,142 +193,8 @@ class MIMORegressionMachineLearner:
         self.clip_value = clip_value
         self.isClipped = isClipped
 
-    def neuralNetworkAddLayer(self,
-                              prev_layer=None,
-                              in_neurons=None,
-                              out_neurons=None,
-                              activation_function=nn.ReLU()):
-        if self.model_type != self.ModelType.NeuralNetwork:
-            raise Exception("Neural Network Exclusive Function")
-        
-        if prev_layer == None:
-            raise Exception("Please specify the previous layer, i.e., after"
-                            " which the new layer will be added")
-        
-        if prev_layer < 1:
-            raise Exception("Invalid previous layer: must be integer larger"
-                            " than or equal to 1")
-        
-        if (in_neurons == None and out_neurons == None):
-            raise Exception("Please specify at least one change with integer:"
-                            " dimension of input or dimension of output")
-        
-        added_layer_name = f'l{prev_layer+1}' # Same as the current next layer
-
-        # If the new layer is in the middle
-        # Change the name for next layer first
-        next_layer_new_name = f'l{prev_layer+2}'
-        self.model._modules[next_layer_new_name] = self.model._modules.pop(
-                                                    added_layer_name)
-
-        if in_neurons == None:
-            # If the input dimension for new layer is not specified, get the 
-            # output dimension of the previous layer
-            in_neurons = getattr(self.model, f'l{prev_layer}')[0].out_features
-        else:
-            getattr(self.model, f'l{prev_layer}')[0].out_features = in_neurons
-
-        if out_neurons == None:
-            # If the output dimension for new layer is not specified, get the
-            # input dimension of the next layer (now renamed)
-            out_neurons = getattr(self.model, next_layer_new_name)[0].in_features
-        else:
-            getattr(self.model, next_layer_new_name)[0].in_features = out_neurons
-
-        setattr(self.model, added_layer_name, nn.Sequential(
-            nn.Linear(in_neurons, out_neurons),
-            activation_function
-        ))
-
-        # Update the layer name list, insert correctly
-        self.model.nn_layer_array.insert(prev_layer+1, next_layer_new_name)
-
-        # Update the forward function
-        def newForwardFunc(x):
-            for layer_name in self.model.nn_layer_array:
-                x = getattr(self.model, layer_name)(x)
-            return x
-            # x = self.model.l1(x)
-            # x = self.model.l2(x)
-            # x = self.model.l3(x)
-            # return self.model.outlayer(x)
-        self.model.forward = newForwardFunc
-        
-
-    def neuralNetworkRemoveLayer(self):
-        if self.model_type != self.ModelType.NeuralNetwork:
-            raise Exception("Neural Network Exclusive Function")
-        
-    # def newForwardFunc(self, x):
-    #     for layer_name in self.model.nn_layer_array:
-    #         x = getattr(self.model, layer_name)(x)
-    #     return self.model.outlayer(x)
-
-    def neuralNetworkModifyNeuron(self,
-                                  num_layer=None,
-                                  in_neurons=None,
-                                  out_neurons=None):
-        if self.model_type != self.ModelType.NeuralNetwork:
-            raise Exception("Neural Network Exclusive Function")
-
-        if num_layer == None:
-            raise Exception("Please specify the layer to modify with an integer")
-        
-        if (in_neurons == None and out_neurons == None):
-            raise Exception("Please specify at least one change with integer:"
-                            " dimension of input or dimension of output")
-        
-        layer_count = 0
-        for name, module in self.model.named_modules():
-            if isinstance(module, nn.Sequential):
-                layer_count += 1
-                if layer_count == num_layer:
-                    if in_neurons != None:
-                        module[0].in_features = in_neurons
-                    if out_neurons != None:
-                        module[0].out_features = out_neurons
-
-                # If input is changed, preceding layer also needs to be changed
-                # Unless the preceding layer is layer 0 (does not exist)
-                if (layer_count == (num_layer - 1) and 
-                    num_layer > 0 and 
-                    in_neurons != None):
-                    module[0].out_features = in_neurons
-
-                # If output is changed, succeeding layer also needs to be changed
-                # If the succeeding layer is the outlayer, it will be processed
-                # independently
-                if (layer_count == (num_layer + 1) and
-                    out_neurons != None):
-                    module[0].in_features = out_neurons
-
-            if (name == 'outlayer' and out_neurons != None):
-                module.in_features = out_neurons
-    
-    def neuralNetworkModifyActivation(self,
-                                      num_layer=None,
-                                      activation_function=None):
-        if self.model_type != self.ModelType.NeuralNetwork:
-            raise Exception("Neural Network Exclusive Function")
-        
-        if num_layer == None:
-            raise Exception("Please specify the layer to modify with an integer")
-        
-        if activation_function == None:
-            raise Exception("Please specify the desired activation function")
-        
-        layer_count = 0
-        for name, module in self.model.named_modules():
-            if isinstance(module, nn.Sequential):
-                layer_count += 1
-                if layer_count == num_layer:
-                    module[1] = activation_function
-
-    def neuralNetworkVisualizer(self):
-        for name, module in self.model.named_modules():
-            print(name)
-            print(module)
-
+        self.neuralNetworkCriterionSetter(criterion)
+        self.neuralNetworkOptimizerSetter(optimizer)
 
     def neuralNetworkCriterionSetter(self, criterion=None):
         if self.model_type != self.ModelType.NeuralNetwork:
@@ -323,9 +211,122 @@ class MIMORegressionMachineLearner:
         
         if optimizer == None:
             optimizer = optim.AdamW(self.model.parameters(), lr=0.01)
-
+    
         self.optimizer = optimizer
 
+    def neuralNetworkAddLayer(self,
+                              prev_layer=None,
+                              in_neurons=None,
+                              out_neurons=None,
+                              activation_function=nn.ReLU()):
+        if self.model_type != self.ModelType.NeuralNetwork:
+            raise Exception("Neural Network Exclusive Function")
+        
+        if prev_layer == None:
+            raise Exception("Please specify the previous layer, i.e., after"
+                            " which the new layer will be added")  
+        elif prev_layer < 1:
+            raise Exception("Invalid previous layer: must be integer larger"
+                            " than or equal to 1")
+        elif prev_layer > len(self.nn_activation_list):
+            raise Exception("Invalid layer number: too large")
+        
+        if ((in_neurons == None and out_neurons == None) or 
+            (in_neurons != None and out_neurons != None)):
+            raise Exception("Please specify one and only one change with an"
+                            " integer: dimension of input or dimension of output")
+        
+        # Set the number of neurons for the new layer
+        if in_neurons == None:
+            self.nn_neuron_list.insert(prev_layer+1, out_neurons)
+
+        if out_neurons == None:
+            self.nn_neuron_list.insert(prev_layer, in_neurons)
+        # Set the activation function for the new layer
+        self.nn_activation_list.insert(prev_layer, activation_function)
+
+        # Re-initialize
+        self.neuralNetworkInitialize()
+        
+
+    def neuralNetworkRemoveLayer(self, num_layer=None, isPrevPreserved=True):
+        if self.model_type != self.ModelType.NeuralNetwork:
+            raise Exception("Neural Network Exclusive Function")
+        if num_layer == None:
+            raise Exception("Please specify the layer to remove with an integer")
+        elif num_layer < 1:
+            raise Exception("Invalid layer number: must be integer larger than"
+                            " or equal to 1")
+        elif num_layer > len(self.nn_activation_list):
+            raise Exception("Invalid layer number: too large")
+
+        if isPrevPreserved:
+            # isPrevPreserved being True: the output dim of the previous layer
+            # is preserved, while changing the input dim of the next layer
+            self.nn_neuron_list.pop(num_layer)
+        else:
+            # isPrevPreserved being False: the input dim of the next layer is
+            # preserved, while changing the output dim of the previous layer
+            self.nn_neuron_list.pop(num_layer-1)
+        # Remove the activation function for the layer
+        self.nn_activation_list.pop(num_layer-1)
+        # Re-initialize
+        self.neuralNetworkInitialize()
+        
+
+    def neuralNetworkModifyNeuron(self,
+                                  num_layer=None,
+                                  in_neurons=None,
+                                  out_neurons=None):
+        if self.model_type != self.ModelType.NeuralNetwork:
+            raise Exception("Neural Network Exclusive Function")
+
+        if num_layer == None:
+            raise Exception("Please specify the layer to modify with an integer")
+        elif num_layer < 1:
+            raise Exception("Invalid layer number: must be integer larger than"
+                            " or equal to 1")
+        elif num_layer > len(self.nn_activation_list):
+            raise Exception("Invalid layer number: too large")
+        
+        if (in_neurons == None and out_neurons == None):
+            raise Exception("Please specify at least one change with integer:"
+                            " dimension of input or dimension of output")
+        
+        # Change the number of neurons
+        if in_neurons != None:
+            self.nn_neuron_list[num_layer-1] = in_neurons
+        if out_neurons != None:
+            self.nn_neuron_list[num_layer] = out_neurons
+
+        # Re-initialize
+        self.neuralNetworkInitialize()
+    
+    def neuralNetworkModifyActivation(self,
+                                      num_layer=None,
+                                      activation_function=None):
+        if self.model_type != self.ModelType.NeuralNetwork:
+            raise Exception("Neural Network Exclusive Function")
+        
+        if num_layer == None:
+            raise Exception("Please specify the layer to modify with an integer")
+        elif num_layer < 1:
+            raise Exception("Invalid layer number: must be integer larger than"
+                            " or equal to 1")
+        elif num_layer > len(self.nn_activation_list):
+            raise Exception("Invalid layer number: too large")
+        
+        if activation_function == None:
+            raise Exception("Please specify the desired activation function")
+        
+        self.nn_activation_list[num_layer-1] = activation_function
+        # Re-initialize
+        self.neuralNetworkInitialize()
+
+    def neuralNetworkVisualizer(self):
+        for module in self.model.modules():
+            print(module)
+            break # Effectively only printing the Net()
         
     def trainRFXGB(self):
         # Check if a model has been chosen
@@ -371,7 +372,6 @@ class MIMORegressionMachineLearner:
             dtype=torch.float32)
         test_x = as_tensor(self.test_x, dtype=torch.float32)
 
-
         start_time = time.time()
         for epoch in range(epochs):
             # 1) Forward pass: Compute predicted y by passing x to the model
@@ -381,8 +381,6 @@ class MIMORegressionMachineLearner:
             loss = self.criterion(y_pred, train_y)
             print(f'Epoch: {epoch} | Loss: {loss.item()} ')
             loss_array.append(loss.item())
-
-            break
 
             if epoch % 100 == 99:
                 Y_train_pred = self.model(train_x)
